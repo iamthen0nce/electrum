@@ -53,7 +53,7 @@ if TYPE_CHECKING:
 
 OLD_SEED_VERSION = 4        # electrum versions < 2.0
 NEW_SEED_VERSION = 11       # electrum versions >= 2.0
-FINAL_SEED_VERSION = 44     # electrum >= 2.7 will set this to prevent
+FINAL_SEED_VERSION = 45     # electrum >= 2.7 will set this to prevent
                             # old versions from overwriting new format
 
 
@@ -193,6 +193,7 @@ class WalletDB(JsonDB):
         self._convert_version_42()
         self._convert_version_43()
         self._convert_version_44()
+        self._convert_version_45()
         self.put('seed_version', FINAL_SEED_VERSION)  # just to be sure
 
         self._after_upgrade_tasks()
@@ -870,6 +871,15 @@ class WalletDB(JsonDB):
                 change_addresses[str(i)] = addr
             self.data['change_addresses'] = change_addresses
         self.data['seed_version'] = 44
+
+    def _convert_version_45(self):
+        if not self._is_upgrade_method_needed(44, 44):
+            return
+        # convert keystore names
+        for key in list(self.data.keys()):
+            if key.endswith('/'):
+                self.data[key[:-1]] = self.data.pop(key)
+        self.data['seed_version'] = 45
 
     def _convert_imported(self):
         if not self._is_upgrade_method_needed(0, 13):

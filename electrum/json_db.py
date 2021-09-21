@@ -52,18 +52,22 @@ def locked(func):
 class StoredObject:
 
     db = None
+    path = None
 
     def __setattr__(self, key, value):
-        if self.db:
-            self.db.set_modified(True)
+        if self.db and key not in ['path', 'db'] and not key.startswith('_'):
+            path = '/' + '/'.join(self.path + [key])
+            self.db.add_patch({'op': 'replace', 'path': path, 'value': value})
         object.__setattr__(self, key, value)
 
-    def set_db(self, db):
+    def set_db(self, db, path):
         self.db = db
+        self.path = path
 
     def to_json(self):
         d = dict(vars(self))
         d.pop('db', None)
+        d.pop('path', None)
         # don't expose/store private stuff
         d = {k: v for k, v in d.items()
              if not k.startswith('_')}
@@ -80,10 +84,10 @@ class StoredDict(dict):
         self.path = path
         # recursively convert dicts to StoredDict
         for k, v in list(data.items()):
-            self.__setitem__(k, v)
+            self.__setitem__(k, v, patch=False)
 
     @locked
-    def __setitem__(self, key, v):
+    def __setitem__(self, key, v, patch=True):
         is_new = key not in self
         # early return to prevent unnecessary disk writes
         if not is_new and self[key] == v:
@@ -107,26 +111,32 @@ class StoredDict(dict):
                 v = self.db._convert_value(self.path, key, v)
         # set parent of StoredObject
         if isinstance(v, StoredObject):
-            v.set_db(self.db)
+            v.set_db(self.db, self.path + [key])
         # set item
         dict.__setitem__(self, key, v)
-        if self.db:
-            self.db.set_modified(True)
+        if self.db and patch:
+            path = '/' + '/'.join([str(x) for x in self.path + [key]])
+            op = 'add' if is_new else 'replace'
+            self.db.add_patch({'op': op, 'path': path, 'value': v})
 
     @locked
     def __delitem__(self, key):
         dict.__delitem__(self, key)
         if self.db:
-            self.db.set_modified(True)
+            path = '/' + '/'.join([str(x) for x in self.path + [key]])
+            self.db.add_patch({'op': 'remove', 'path': path})
 
     @locked
     def pop(self, key, v=_RaiseKeyError):
-        if v is _RaiseKeyError:
-            r = dict.pop(self, key)
-        else:
-            r = dict.pop(self, key, v)
+        if key not in self:
+            if v is _RaiseKeyError:
+                raise KeyError(key)
+            else:
+                return v
+        r = dict.pop(self, key)
         if self.db:
-            self.db.set_modified(True)
+            path = '/' + '/'.join(self.path + [key])
+            self.db.add_patch({'op': 'remove', 'path': path})
         return r
 
 
@@ -196,6 +206,7 @@ class JsonDB(Logger):
         Logger.__init__(self)
         self.lock = threading.RLock()
         self.data = data
+        self.pending_changes = []
         self._modified = False
 
     def set_modified(self, b):
@@ -205,6 +216,8 @@ class JsonDB(Logger):
     def modified(self):
         return self._modified
 
+    def add_patch(self, patch):
+        self.pending_changes.append(json.dumps(patch, cls=JsonDBJsonEncoder))
 
     @locked
     def get(self, key, default=None):
